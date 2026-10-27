@@ -5,7 +5,7 @@ import {
   GatewayIntentBits,
   Partials,
 } from 'discord.js';
-import { config } from './config.js';
+import { config, missingRequiredConfig, runtimeConfigured } from './config.js';
 import { generateSentinelReply } from './ai.js';
 import { command, handleCommand } from './commands.js';
 import {
@@ -98,13 +98,24 @@ client.on(Events.MessageCreate, async message => {
 const server = http.createServer((req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, service: 'sentinel-watchtower', discordReady: client.isReady() }));
+    res.end(JSON.stringify({
+      ok: true,
+      service: 'sentinel-watchtower',
+      configured: runtimeConfigured,
+      missing: missingRequiredConfig,
+      discordReady: client.isReady(),
+    }));
     return;
   }
   res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
-  res.end('Sentinel Watchtower online.');
+  res.end(runtimeConfigured ? 'Sentinel Watchtower online.' : 'Sentinel Watchtower setup mode.');
 });
 
-await initDb();
 server.listen(config.PORT, '0.0.0.0', () => console.log(`[watchtower] health server listening on ${config.PORT}`));
-await client.login(config.DISCORD_BOT_TOKEN);
+
+if (runtimeConfigured) {
+  await initDb();
+  await client.login(config.DISCORD_BOT_TOKEN);
+} else {
+  console.warn(`[watchtower] setup mode; missing configuration: ${missingRequiredConfig.join(', ')}`);
+}
