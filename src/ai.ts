@@ -2,14 +2,17 @@ import OpenAI from 'openai';
 import { config } from './config.js';
 import { SENTINEL_SYSTEM } from './personality.js';
 
-const openai = new OpenAI({ apiKey: config.OPENAI_API_KEY });
-
 export async function generateSentinelReply(input: {
   userName: string;
   userText: string;
   channelContext: Array<{ display_name: string; content: string; created_at: Date }>;
   explicitMemories: string[];
 }) {
+  if (!config.OPENAI_API_KEY || !config.OPENAI_MODEL) {
+    throw new Error('OpenAI runtime is not configured.');
+  }
+
+  const openai = new OpenAI({ apiKey: config.OPENAI_API_KEY });
   const context = input.channelContext.length
     ? input.channelContext.map(m => `[${m.display_name}] ${m.content}`).join('\n')
     : '(No stored channel context.)';
