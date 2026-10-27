@@ -4,7 +4,7 @@ import { z } from 'zod';
 const schema = z.object({
   DISCORD_BOT_TOKEN: z.string().optional().default(''),
   OPENROUTER_API_KEY: z.string().optional().default(''),
-  AI_MODEL: z.string().optional().default('openrouter/free'),
+  AI_MODEL: z.string().optional().default('nvidia/nemotron-3-ultra-550b-a55b:free'),
   DATABASE_URL: z.string().optional().default(''),
   PORT: z.coerce.number().int().positive().default(10000),
   DISCORD_DEV_GUILD_ID: z.string().optional(),
