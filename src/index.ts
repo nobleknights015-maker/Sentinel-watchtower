@@ -13,6 +13,8 @@ import {
   getWatchedChannels,
   initDb,
   isOptedOut,
+  learnedMemories,
+  learnFromDirectMessage,
   recentContext,
   storeMessage,
 } from './db.js';
@@ -27,6 +29,7 @@ const client = new Client({
 });
 
 const cooldowns = new Map<string, number>();
+const sentinelNamePrefix = /^\s*(?:(?:hey|hi|hello|yo|sup|okay|ok)\s*[,!:\-]?\s*)?sentinel\b[\s,!:;\-?]*/i;
 
 client.once(Events.ClientReady, async ready => {
   console.log(`[watchtower] logged in as ${ready.user.tag}`);
@@ -58,6 +61,8 @@ client.on(Events.MessageCreate, async message => {
   const optedOut = await isOptedOut(message.guildId, message.author.id);
   const watched = (await getWatchedChannels(message.guildId)).includes(message.channelId);
   const mentioned = message.mentions.has(client.user!.id);
+  const invokedByName = sentinelNamePrefix.test(message.content);
+  const invoked = mentioned || invokedByName;
 
   if (watched && !optedOut && message.content.trim()) {
     await storeMessage({
@@ -71,7 +76,7 @@ client.on(Events.MessageCreate, async message => {
     });
   }
 
-  if (!mentioned) return;
+  if (!invoked) return;
   const now = Date.now();
   const last = cooldowns.get(message.channelId) ?? 0;
   if (now - last < 4000) return;
@@ -79,14 +84,23 @@ client.on(Events.MessageCreate, async message => {
 
   await message.channel.sendTyping();
   try {
+    if (!optedOut) {
+      await learnFromDirectMessage(message.guildId, message.author.id, message.id, message.content);
+    }
+
     const context = watched ? await recentContext(message.guildId, message.channelId) : [];
-    const memories = optedOut ? [] : await explicitMemories(message.guildId, message.author.id);
-    const cleaned = message.content.replace(new RegExp(`<@!?${client.user!.id}>`, 'g'), '').trim();
+    const explicit = optedOut ? [] : await explicitMemories(message.guildId, message.author.id);
+    const learned = optedOut ? [] : await learnedMemories(message.guildId, message.author.id);
+
+    let cleaned = message.content.replace(new RegExp(`<@!?${client.user!.id}>`, 'g'), '').trim();
+    cleaned = cleaned.replace(sentinelNamePrefix, '').trim();
+
     const reply = await generateSentinelReply({
       userName: message.member?.displayName ?? message.author.username,
       userText: cleaned || 'Sentinel?',
       channelContext: context,
-      explicitMemories: memories,
+      explicitMemories: explicit,
+      learnedMemories: learned,
     });
     await message.reply({ content: reply.slice(0, 1900), allowedMentions: { repliedUser: false } });
   } catch (err) {
