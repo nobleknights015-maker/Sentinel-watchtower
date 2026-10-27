@@ -16,6 +16,9 @@ export async function generateSentinelReply(input: {
   const client = new OpenAI({
     apiKey: config.OPENROUTER_API_KEY,
     baseURL: 'https://openrouter.ai/api/v1',
+    defaultHeaders: {
+      'X-Title': 'Sentinel Watchtower',
+    },
   });
 
   const context = input.channelContext.length
@@ -28,19 +31,32 @@ export async function generateSentinelReply(input: {
     ? input.learnedMemories.map((m, i) => `${i + 1}. ${m}`).join('\n')
     : '(No learned memory for this user.)';
 
-  const response = await client.chat.completions.create({
-    model: config.AI_MODEL,
-    messages: [
-      { role: 'system', content: SENTINEL_SYSTEM },
-      {
-        role: 'user',
-        content: `Recent permitted channel context:\n${context}\n\nExplicit memories for the requesting user:\n${explicit}\n\nLearned memories for the requesting user:\n${learned}\n\nCurrent speaker: ${input.userName}\nCurrent message: ${input.userText}`,
-      },
-    ],
+  const messages = [
+    { role: 'system' as const, content: SENTINEL_SYSTEM },
+    {
+      role: 'user' as const,
+      content: `Recent permitted channel context:\n${context}\n\nExplicit memories for the requesting user:\n${explicit}\n\nLearned memories for the requesting user:\n${learned}\n\nCurrent speaker: ${input.userName}\nCurrent message: ${input.userText}`,
+    },
+  ];
+
+  const run = (model: string) => client.chat.completions.create({
+    model,
+    messages,
+    temperature: 0.78,
+    max_tokens: 500,
   });
+
+  let response;
+  try {
+    response = await run(config.AI_MODEL);
+  } catch (error) {
+    if (config.AI_MODEL === 'openrouter/free') throw error;
+    console.warn(`[watchtower] primary model ${config.AI_MODEL} unavailable; using free-router fallback`, error);
+    response = await run('openrouter/free');
+  }
 
   const text = response.choices[0]?.message?.content;
   return typeof text === 'string' && text.trim()
     ? text.trim()
-    : 'Watchtower received that, but I have no useful response yet.';
+    : 'I caught the message. The useful part of my reply appears to have wandered off.';
 }
