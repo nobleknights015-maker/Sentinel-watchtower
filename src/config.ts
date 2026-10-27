@@ -10,7 +10,15 @@ const schema = z.object({
   DISCORD_DEV_GUILD_ID: z.string().optional(),
 });
 
-export const config = schema.parse(process.env);
+// Bot-Hosting.net exposes the assigned port as SERVER_PORT. Render and
+// conventional Node hosts typically use PORT. Normalize both into PORT so the
+// same runtime works everywhere without host-specific source branches.
+const normalizedEnv = {
+  ...process.env,
+  PORT: process.env.SERVER_PORT ?? process.env.PORT,
+};
+
+export const config = schema.parse(normalizedEnv);
 
 export const missingRequiredConfig = [
   ['DISCORD_BOT_TOKEN', config.DISCORD_BOT_TOKEN],
