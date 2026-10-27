@@ -40,6 +40,20 @@ export async function initDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_explicit_memory_user
       ON explicit_memory(guild_id, user_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS learned_memory (
+      id BIGSERIAL PRIMARY KEY,
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      category TEXT NOT NULL,
+      memory_key TEXT NOT NULL,
+      note TEXT NOT NULL,
+      source_message_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(guild_id, user_id, category, memory_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_learned_memory_user
+      ON learned_memory(guild_id, user_id, updated_at DESC);
   `);
 }
 
@@ -62,8 +76,9 @@ export async function deleteUserData(guildId: string, userId: string) {
     await client.query('BEGIN');
     const messages = await client.query('DELETE FROM message_memory WHERE guild_id=$1 AND user_id=$2', [guildId, userId]);
     const memories = await client.query('DELETE FROM explicit_memory WHERE guild_id=$1 AND user_id=$2', [guildId, userId]);
+    const learned = await client.query('DELETE FROM learned_memory WHERE guild_id=$1 AND user_id=$2', [guildId, userId]);
     await client.query('COMMIT');
-    return { messages: messages.rowCount ?? 0, memories: memories.rowCount ?? 0 };
+    return { messages: messages.rowCount ?? 0, memories: memories.rowCount ?? 0, learned: learned.rowCount ?? 0 };
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
@@ -120,5 +135,102 @@ export async function addExplicitMemory(guildId: string, userId: string, note: s
 
 export async function explicitMemories(guildId: string, userId: string, limit = 12) {
   const r = await pool.query('SELECT note FROM explicit_memory WHERE guild_id=$1 AND user_id=$2 ORDER BY created_at DESC LIMIT $3', [guildId, userId, limit]);
+  return r.rows.map((x) => x.note as string).reverse();
+}
+
+type LearnedCandidate = { category: string; key: string; note: string };
+
+function tidy(value: string, max = 500) {
+  return value.trim().replace(/\s+/g, ' ').replace(/[.!?]+$/, '').slice(0, max);
+}
+
+function memoryKey(value: string) {
+  return tidy(value.toLowerCase(), 180);
+}
+
+function extractLearnedCandidates(content: string): LearnedCandidate[] {
+  const text = tidy(content, 1000);
+  const found: LearnedCandidate[] = [];
+
+  const remember = text.match(/\bremember(?:\s+that)?\s+(.{3,500})/i);
+  if (remember?.[1]) {
+    const fact = tidy(remember[1]);
+    found.push({ category: 'requested', key: memoryKey(fact), note: `User explicitly asked Sentinel to remember: ${fact}` });
+  }
+
+  const favorite = text.match(/\bmy favorite ([a-z0-9][a-z0-9 _'\/-]{1,60}) is (.{1,250})/i);
+  if (favorite?.[1] && favorite[2]) {
+    const topic = tidy(favorite[1], 80);
+    const value = tidy(favorite[2], 250);
+    found.push({ category: 'preference', key: `favorite:${memoryKey(topic)}`, note: `Favorite ${topic}: ${value}` });
+  }
+
+  const positive = text.match(/\bi (?:really )?(love|like|enjoy|prefer) (.{2,250})/i);
+  if (positive?.[1] && positive[2]) {
+    const verb = positive[1].toLowerCase();
+    const value = tidy(positive[2], 250);
+    found.push({ category: 'preference', key: `positive:${memoryKey(value)}`, note: `User says they ${verb} ${value}` });
+  }
+
+  const negative = text.match(/\bi (?:really )?(hate|dislike|don't like|do not like) (.{2,250})/i);
+  if (negative?.[1] && negative[2]) {
+    const verb = negative[1].toLowerCase();
+    const value = tidy(negative[2], 250);
+    found.push({ category: 'preference', key: `negative:${memoryKey(value)}`, note: `User says they ${verb} ${value}` });
+  }
+
+  const relationForward = text.match(/\b([A-Za-z][A-Za-z0-9_'\-]{1,40}) is my (wife|husband|girlfriend|boyfriend|partner|fiance|fiancée|fiancé|sister|brother|mother|mom|father|dad|daughter|son|friend|best friend)\b/i);
+  if (relationForward?.[1] && relationForward[2]) {
+    const person = tidy(relationForward[1], 50);
+    const role = tidy(relationForward[2].toLowerCase(), 40);
+    found.push({ category: 'relationship', key: `role:${memoryKey(role)}`, note: `${person} is the user's ${role}` });
+  }
+
+  const relationReverse = text.match(/\bmy (wife|husband|girlfriend|boyfriend|partner|fiance|fiancée|fiancé|sister|brother|mother|mom|father|dad|daughter|son|friend|best friend) is ([A-Za-z][A-Za-z0-9_'\-]{1,40})\b/i);
+  if (relationReverse?.[1] && relationReverse[2]) {
+    const role = tidy(relationReverse[1].toLowerCase(), 40);
+    const person = tidy(relationReverse[2], 50);
+    found.push({ category: 'relationship', key: `role:${memoryKey(role)}`, note: `${person} is the user's ${role}` });
+  }
+
+  const callMe = text.match(/\bcall me ([A-Za-z][A-Za-z0-9_'\-]{1,40})\b/i);
+  if (callMe?.[1]) {
+    const name = tidy(callMe[1], 50);
+    found.push({ category: 'identity', key: 'preferred-name', note: `User prefers to be called ${name}` });
+  }
+
+  return found;
+}
+
+export async function learnFromDirectMessage(guildId: string, userId: string, messageId: string, content: string) {
+  const candidates = extractLearnedCandidates(content);
+  for (const item of candidates) {
+    await pool.query(`
+      INSERT INTO learned_memory(guild_id,user_id,category,memory_key,note,source_message_id,updated_at)
+      VALUES($1,$2,$3,$4,$5,$6,NOW())
+      ON CONFLICT(guild_id,user_id,category,memory_key)
+      DO UPDATE SET note=EXCLUDED.note, source_message_id=EXCLUDED.source_message_id, updated_at=NOW()
+    `, [guildId, userId, item.category, item.key, item.note, messageId]);
+  }
+
+  if (candidates.length) {
+    await pool.query(`
+      DELETE FROM learned_memory WHERE id IN (
+        SELECT id FROM learned_memory
+        WHERE guild_id=$1 AND user_id=$2
+        ORDER BY updated_at DESC OFFSET 60
+      )
+    `, [guildId, userId]);
+  }
+
+  return candidates.length;
+}
+
+export async function learnedMemories(guildId: string, userId: string, limit = 20) {
+  const r = await pool.query(`
+    SELECT note FROM learned_memory
+    WHERE guild_id=$1 AND user_id=$2
+    ORDER BY updated_at DESC LIMIT $3
+  `, [guildId, userId, limit]);
   return r.rows.map((x) => x.note as string).reverse();
 }
