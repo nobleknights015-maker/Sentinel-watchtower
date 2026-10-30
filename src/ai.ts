@@ -46,17 +46,33 @@ export async function generateSentinelReply(input: {
     max_tokens: 500,
   });
 
+  const extractText = (response: unknown): string | null => {
+    const text = (response as { choices?: Array<{ message?: { content?: unknown } }> } | null | undefined)
+      ?.choices?.[0]?.message?.content;
+    return typeof text === 'string' && text.trim() ? text.trim() : null;
+  };
+
   let response;
   try {
     response = await run(config.AI_MODEL);
+    const primaryText = extractText(response);
+    if (primaryText) return primaryText;
+
+    console.warn(`[watchtower] primary model ${config.AI_MODEL} returned no usable text`);
+    if (config.AI_MODEL !== 'openrouter/free') {
+      response = await run('openrouter/free');
+      const fallbackText = extractText(response);
+      if (fallbackText) return fallbackText;
+      console.warn('[watchtower] free-router fallback returned no usable text');
+    }
   } catch (error) {
     if (config.AI_MODEL === 'openrouter/free') throw error;
     console.warn(`[watchtower] primary model ${config.AI_MODEL} unavailable; using free-router fallback`, error);
     response = await run('openrouter/free');
+    const fallbackText = extractText(response);
+    if (fallbackText) return fallbackText;
+    console.warn('[watchtower] free-router fallback returned no usable text');
   }
 
-  const text = response.choices[0]?.message?.content;
-  return typeof text === 'string' && text.trim()
-    ? text.trim()
-    : 'I caught the message. The useful part of my reply appears to have wandered off.';
+  return 'I caught the message. The useful part of my reply appears to have wandered off.';
 }
